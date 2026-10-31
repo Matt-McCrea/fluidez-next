@@ -1,0 +1,75 @@
+# Builds the Fluidez app from the rebuild branch of Matt-McCrea/Fluidez and
+# publishes it to this repo's GitHub Pages at
+# https://matt-mccrea.github.io/fluidez-next/
+# Runs on a schedule and skips the deploy when the source has not changed.
+name: Publish Fluidez rebuild
+
+on:
+  schedule:
+    - cron: '*/20 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.src.outputs.sha }}
+      changed: ${{ steps.src.outputs.changed }}
+    steps:
+      - id: src
+        run: |
+          sha=$(git ls-remote https://github.com/Matt-McCrea/Fluidez refs/heads/rebuild | cut -f1)
+          live=$(curl -fsSL https://matt-mccrea.github.io/fluidez-next/BUILD_SHA || echo none)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          if [ "$sha" = "$live" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"; echo "live site already at $sha"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"; echo "building $sha (live: $live)"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Matt-McCrea/Fluidez
+          ref: ${{ needs.check.outputs.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+      - run: npm run build
+        env:
+          BASE_PATH: /fluidez-next/
+      - run: |
+          echo "${{ needs.check.outputs.sha }}" > dist/BUILD_SHA
+          touch dist/.nojekyll
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: app/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
